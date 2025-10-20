@@ -1,0 +1,30 @@
+# core deep-learning and tensor ops
+torch==2.8.0
+torchvision==0.23.0
+torchaudio>=2.8.0
+
+# scientific computing
+numpy>=2.3.4
+scipy>=1.12.0
+pandas>=2.3.2
+
+# visualization & analysis
+matplotlib>=3.10.7
+seaborn>=0.13.2
+plotly>=6.3.1
+
+# experiment tracking & UX
+tqdm>=4.66.0
+rich>=13.7.0
+wandb>=0.22.2
+
+# interactive development
+jupyter>=1.0.0
+notebook>=7.0.0
+ipykernel>=6.29.0
+
+# testing & reproducibility
+pytest>=8.0.0
+
+# advanced data/plot handling
+scikit-learn>=1.5.0
