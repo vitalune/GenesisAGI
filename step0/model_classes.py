@@ -71,34 +71,40 @@ class InstrumentedTransformer(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
-
+        
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.pos_encoding = nn.Parameter(torch.randn(config.max_seq_len, config.d_model))
-
+        
+        # FIX: actually create the layers
+        self.layers = nn.ModuleList([
+            TransformerLayer(config) for _ in range(config.n_layers)
+        ])
+        
         self.output = nn.Linear(config.d_model, config.vocab_size)
-
+        
         # instrumentation storage
         self.layer_activations = []
         self.gradient_flows = []
         self.loss_history = []
-
+    
     def forward(self, x, return_metadata=False):
         # embed
-        x = self_embedding(x) + self.pos_encoding[:x.size(1)]
-
+        x = self.embedding(x) + self.pos_encoding[:x.size(1)]
+        
         metadata = {'layers': []}
-
-        # layers
+        
+        # Layers
         for i, layer in enumerate(self.layers):
             if return_metadata:
                 x, layer_meta = layer(x, return_metadata=True)
                 metadata['layers'].append(layer_meta)
             else:
-                x = layers(x)
-
-        # output
-        logits = self.outputs(x)
-
+                # FIX: layers(x) -> layer(x)
+                x = layer(x)
+        
+        # Output (FIX: self.outputs -> self.output)
+        logits = self.output(x)
+        
         if return_metadata:
             return logits, metadata
         return logits
@@ -166,49 +172,52 @@ class ConfusionDetector:
             'prediction_confidence': []
         }
 
-    def compute_all_metrics(self, model, batch, metadata):
+    def compute_all_metrics(self, model, batch, metadata, loss):
         # compute every possible confusion signal
 
-        logits, meta = model(batch['input'], return_metadata=True)
-        loss = nn.CrossEntropyLoss()(logits.view(-1, logits.size(-1)), batch['target'].view(-1))
-
         metrics = {}
-
-        # metric 1: raw loss (baseline)
+        
+        # Metric 1: Raw Loss
         metrics['loss'] = loss.item()
-
-        # metric 2: attention entropy
+        
+        # Metric 2: Attention Entropy
         entropies = []
-        for layer_meta in meta['layers']:
+        for layer_meta in metadata['layers']:
             for head_meta in layer_meta['heads']:
                 entropies.append(head_meta['attn_entropy'].mean().item())
-        metrics['attention_entropy'] = np.mean(entropies)
-
-        # metric 3: gradient variance
-        loss.backward()
-        grad_norms = []
-        for param in model.parameters():
-            if param.grad is not None:
-                grad_norms.append(param.grad.norm().item())
-        metrics['gradient_variance'] = np.std(grad_norms)
-        model.zero_grad()
-
-        # metric 4: layer disagreement
-        layer_norms = [layer_meta['residual_norm'].mean().item()
-                        for layer_meta in meta['layers']]
-        metrics['layer_disagreement'] = np.std(layer_norms)
-
-        # metric 5: activation magnitude
+        metrics['attention_entropy'] = np.mean(entropies) if entropies else 0.0
+        
+        # Metric 3: Gradient Variance (only if training)
+        if model.training:
+            loss_for_grad = loss.clone()
+            loss_for_grad.backward(retain_graph=True)
+            grad_norms = []
+            for param in model.parameters():
+                if param.grad is not None:
+                    grad_norms.append(param.grad.norm().item())
+            metrics['gradient_variance'] = np.std(grad_norms) if grad_norms else 0.0
+            model.zero_grad()
+        else:
+            metrics['gradient_variance'] = 0.0
+        
+        # Metric 4: Layer Disagreement
+        layer_norms = [layer_meta['residual_norm'].mean().item() 
+                       for layer_meta in metadata['layers']]
+        metrics['layer_disagreement'] = np.std(layer_norms) if layer_norms else 0.0
+        
+        # Metric 5: Activation Magnitude
         activations = []
-        for layer_meta in meta['layers']:
+        for layer_meta in metadata['layers']:
             activations.append(layer_meta['ff_activation'].mean().item())
-        metrics['activation_magnitude'] = np.mean(activations)
-
-        # metric 6: prediction confidence
-        probs = torch.softmax(logits, dim=-1)
-        max_probs = probs.max(dim=-1)[0]
-        metrics['prediction_confidence'] = max_probs.mean().item()
-
+        metrics['activation_magnitude'] = np.mean(activations) if activations else 0.0
+        
+        # Metric 6: Prediction Confidence
+        logits = model(batch['input'], return_metadata=False)
+        with torch.no_grad():
+            probs = torch.softmax(logits, dim=-1)
+            max_probs = probs.max(dim=-1)[0]
+            metrics['prediction_confidence'] = max_probs.mean().item()
+        
         return metrics
 
     def track_over_time(self, metrics):
